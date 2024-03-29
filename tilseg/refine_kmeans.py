@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import UnidentifiedImageError, Image
 import sklearn.cluster
+from sklearn.preprocessing import MinMaxScaler
 
 # Local imports
 from tilseg.seg import segment_TILs
@@ -110,13 +111,19 @@ def mask_to_features(mask: np.ndarray = None,
     
     Parameters
     -----
-    mask (np.ndarray): a binary mask with 1's corresponding to the pixels 
-    involved in the cluser with the most contours and 0's for pixels not
+    mask (np.ndarray): a mask with 1's corresponding to the pixels 
+    involved in the TIL cluster (i.e. with the most contours) and 0's for pixels not
+    binary flag (bool): True if the mask is binary which should be a 2D numpy array 
+    consisting of only 1's (i.e. pixels) and 0's (i.e. background). False if the 
+    mask is colored in which it should be a 3D numpy array containing the RGB 
+    values of an image.
 
     Returns
     -----
     features (np.array) is a an array where each row corresponds to a set of 
-    coordinates (x,y) of the pixels where the mask had a value of 1
+    coordinates (x,y) of the pixels where the mask had a value of 1. If the 
+    binary_flag was set to False, then the feature matrix should additionally 
+    include columns corresponding to the RGB values of the pixel.
     """
     
     if binary_flag:
@@ -149,8 +156,15 @@ def mask_to_features(mask: np.ndarray = None,
         tils_coords = np.argwhere(np.all(mask != 0, axis=2)) # get all non-zero elements in the RGB channels (axis=2)
         rgb_values = mask[tils_coords[:, 0], tils_coords[:, 1]] # get the row & column indices of coordinates
         features = np.hstack((tils_coords, rgb_values)) # horizontally stack arrays
+            #features matrix should have 5 columns: X, Y, R, G, B
+        
+    # Scale features
 
-    return features
+    # Assuming 'feature_matrix' is your 5x3000 array with columns: x, y, r, g, b
+    scaler = MinMaxScaler()
+    scaled_features = scaler.fit_transform(features)
+
+    return scaled_features
 
 def km_dbscan_wrapper(mask: np.ndarray, 
                       hyperparameter_dict: dict, 
@@ -168,7 +182,10 @@ def km_dbscan_wrapper(mask: np.ndarray,
     binary_mask (np.ndarray): a binary mask with 1's corresponding to the pixels 
     involved in the cluser with the most contours and 0's for pixels not
     hyperparameter_dict: hyperparameters for dbscan model ('eps' and 'min_samples')
-    print_flag (bool): True for printing saved plot of dbscan model
+    binary flag (bool): True if the mask is binary which should be a 2D numpy array 
+    consisting of only 1's (i.e. pixels) and 0's (i.e. background). False if the 
+    mask is colored in which it should be a 3D numpy array containing the RGB 
+    values of an image.
     
     Returns
     -----

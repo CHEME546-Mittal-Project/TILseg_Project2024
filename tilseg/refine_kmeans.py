@@ -4,11 +4,11 @@ import pathlib
 import time
 
 # External library imports
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import UnidentifiedImageError, Image
 import sklearn.cluster
-from sklearn.preprocessing import MinMaxScaler
 
 # Local imports
 from tilseg.seg import segment_TILs
@@ -120,7 +120,7 @@ def mask_to_features(mask: np.ndarray = None,
 
     Returns
     -----
-    features (np.array) is a an array where each row corresponds to a set of 
+    features (np.array): is a an array where each row corresponds to a set of 
     coordinates (x,y) of the pixels where the mask had a value of 1. If the 
     binary_flag was set to False, then the feature matrix should additionally 
     include columns corresponding to the RGB values of the pixel.
@@ -157,19 +157,15 @@ def mask_to_features(mask: np.ndarray = None,
         rgb_values = mask[tils_coords[:, 0], tils_coords[:, 1]] # get the row & column indices of coordinates
         features = np.hstack((tils_coords, rgb_values)) # horizontally stack arrays
             #features matrix should have 5 columns: X, Y, R, G, B
-        
-    # Scale features
 
-    # Assuming 'feature_matrix' is your 5x3000 array with columns: x, y, r, g, b
-    scaler = MinMaxScaler()
-    scaled_features = scaler.fit_transform(features)
-
-    return scaled_features
+    return features
 
 def km_dbscan_wrapper(mask: np.ndarray, 
                       hyperparameter_dict: dict, 
-                      save_filepath: str,
-                      binary_flag: bool = True):
+                      save_filepath: str = None,
+                      binary_flag: bool = True,
+                      save_image: bool = False,
+                      image_name: str = None):
     """
     Generates a fitted dbscan model and labels when provided a binary mask 
     2D array for the KMeans cluster with the highest contour count. A plot of 
@@ -186,6 +182,8 @@ def km_dbscan_wrapper(mask: np.ndarray,
     consisting of only 1's (i.e. pixels) and 0's (i.e. background). False if the 
     mask is colored in which it should be a 3D numpy array containing the RGB 
     values of an image.
+    save image (bool): True if a save_filepath is specified and the user wants
+    a saved copy of the DBSCAN clustering result.
     
     Returns
     -----
@@ -193,8 +191,9 @@ def km_dbscan_wrapper(mask: np.ndarray,
     dbscan (sklearn.cluster.DBSCAN): fitted dbscan model
     """    
     # Checking if the save directory exists
-    if not os.path.exists(save_filepath) or not os.path.isdir(save_filepath):
-        raise FileNotFoundError("Directory '{}' does not exist.".format(save_filepath))
+    if save_image: 
+        if not os.path.exists(save_filepath) or not os.path.isdir(save_filepath):
+            raise FileNotFoundError("Directory '{}' does not exist.".format(save_filepath))
 
     # # Ensuring the mask is a 2D array
     # if not isinstance(mask, np.ndarray) or mask.ndim != 2:
@@ -222,11 +221,32 @@ def km_dbscan_wrapper(mask: np.ndarray,
     
     #Plotting
     plt.figure(figsize=(8, 6))
-    plt.imshow(all_labels, cmap='viridis')  # Change the colormap as needed
+    plt.imshow(all_labels, cmap='nipy_spectral')  # Change the colormap as needed
     plt.colorbar()
-    plt.title('DBSCAN Clustering Result')
-    plt.show()
+    plt.title('DBSCAN Clustering Result (eps={}, min_samples={})'.format(hyperparameter_dict['eps'], hyperparameter_dict['min_samples']))
 
+    if save_image:
+        if image_name: # if the image name is provided
+            # Split the filename into its base name and extension
+            base_name, _ = os.path.splitext(image_name)
+            plt.savefig(os.path.join(save_filepath, f"{base_name}_DBSCAN.jpg"), dpi=600, bbox_inches='tight')
+            plt.close()
+        else: 
+            plt.savefig(os.path.join(save_filepath, "DBSCAN_result.jpg"), dpi=600, bbox_inches='tight')
+            plt.close()
+    else:
+        plt.show()
+
+    ### saving the image as a .tif file to later extract DBSCAN labels pixel by pixel
+    #TODO: when extracting the DBSCAN labels pixel by pixel, you get an extra 255 cluster 
+        # that isn't part of the original DBSCAN labels    
+    # if save_image:
+    #     # Get the name of the image file without the extension
+    #     filename = os.path.splitext(os.path.basename(save_filepath))[0]
+    #     clustering_image_path = os.path.join(save_filepath, f"{filename}_dbscan_clustering.tif")
+    #     cv2.imwrite(clustering_image_path, dbscan_labels.astype(np.uint8))
+
+    ### original code; run if running with the rest of the pipeline
     # plt.savefig(os.path.join(save_filepath, 'ClusteringResults', 'dbscan_result_colorbar.jpg'))
     # if print_flag:
     #     plt.show()
@@ -238,7 +258,7 @@ def km_dbscan_wrapper(mask: np.ndarray,
     # plt.imshow(all_labels, cmap='viridis');  # Change the colormap as needed
     # plt.imsave(os.path.join(save_filepath, 'ClusteringResults', 'dbscan_result.jpg'), all_labels)
     # plt.close()
-    
+
     return all_labels, dbscan
 
 

@@ -6,8 +6,9 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.pyplot as plt
-from skimage.measure import regionprops, label
 from scipy.spatial import distance
+from skimage.measure import regionprops, label
+import sklearn.cluster
 import tifffile
 
 # Local Imports
@@ -77,6 +78,61 @@ def sbm_to_binarymask(in_path: str,
         cv2.normalize(binary_mask, binary_mask, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
             
         return binary_mask
+
+
+def image_to_features(image_path: str,
+                     binary_flag: bool = True):
+    """
+    Generates the spatial coordinates from a binary mask as features 
+    to cluster with DBSCAN
+    
+    Parameters
+    -----
+    mask (np.ndarray): a mask with 1's corresponding to the pixels 
+    involved in the TIL cluster (i.e. with the most contours) and 0's for pixels not
+    binary flag (bool): True if the mask is binary which should be a 2D numpy array 
+    consisting of only 1's (i.e. pixels) and 0's (i.e. background). False if the 
+    mask is colored in which it should be a 3D numpy array containing the RGB 
+    values of an image.
+
+    Returns
+    -----
+    features (np.array) is a an array where each row corresponds to a set of 
+    coordinates (x,y) of the pixels where the mask had a value of 1. If the 
+    binary_flag was set to False, then the feature matrix should additionally 
+    include columns corresponding to the RGB values of the pixel.
+    """
+    
+    if binary_flag:
+        # reading image and turning it into a binary array
+        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        _, binary_mask = cv2.threshold(image.astype(np.uint8), 0.01, 1, cv2.THRESH_BINARY)
+
+        # Find contours
+        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # contours = 1D array where each element contains the [x,y] coords of pts along contour
+
+        # List to store centroid coordinates
+        centroids = []
+
+        # Iterate through contours
+        for contour in contours:
+            # Calculate moments of the contour
+            M = cv2.moments(contour)
+            
+            # Calculate centroid coordinates
+            if M['m00'] != 0:
+                centroid_x = int(M['m10'] / M['m00'])
+                centroid_y = int(M['m01'] / M['m00'])
+                centroids.append((centroid_x, centroid_y))
+
+        # Convert centroids list to NumPy array
+        centroid_coords = np.array(centroids)
+        
+    # else:
+        
+
+    return centroid_coords, binary_mask, contours
 
 
 def nearest_neighbor_distance(binary_mask, 
@@ -285,17 +341,20 @@ def cluster_processing(dbscan_labels: np.ndarray,
         total_clusters = len(labels)
 
         return cluster_labels_counts, total_clusters
-    
+
 
 def sbm_dbscan_wrapper(in_path: str, 
                out_path: str = None, 
                hyperparameter_dict: dict = {'eps': 150,'min_samples': 100}, 
                multiple_patches_flag: bool = False,
+               binary_flag: bool = True,
                save_image: bool = False, 
                cluster_plot: bool = False,
                nn_plot: bool = False):
     """
-    
+    Takes in the TIL mask, creates the necessary feature matrix, 
+    and trains a DSBCAN model based on those features and the given 
+    hyperparameters.
     
     Parameters
     -----
@@ -325,22 +384,34 @@ def sbm_dbscan_wrapper(in_path: str,
     and the corresponding value if the total number of clusters for that image.
     """
     
-    # generate binary masks(s) depending if there are multiple patches or not
-    binary_mask = sbm_to_binarymask(in_path, multiple_patches_flag)
-
     # initialize dictionaries
     labels_dict = {}
     clusters_dict = {}
 
     if multiple_patches_flag:
-        for filename, mask in zip(os.listdir(in_path), binary_mask):
+        for filename in os.listdir(in_path):
             if filename.endswith(".tif"): # looping over each patch
-                dbscan_labels, dbscan_model = km_dbscan_wrapper(mask, 
-                                                hyperparameter_dict, 
-                                                save_filepath = out_path,
-                                                binary_flag = True,
-                                                save_image = save_image,
-                                                image_name = filename)
+                
+                # generate feature matrix
+                image_path = os.path.join(in_path, filename)
+                centroid_coords, binary_mask = image_to_features(image_path, binary_flag)
+
+                # DBSCAN Model Fitting
+                dbscan = sklearn.cluster.DBSCAN(**hyperparameter_dict)
+                dbscan_labels = dbscan.fit_predict(centroid_coords)
+
+                # assigning DBSCAN labels to TILs based on centroids
+                colors = np.zeros_like(binary_mask)
+                for i, label in enumerate(dbscan_labels):
+                    centroid_x, centroid_y = centroid_coords[i]
+                    colors[centroid_y, centroid_x] = label
+                
+                # saving image
+                if save_image:
+                    plt.savefig(os.path.join(out_path, f"{filename}_DBSCAN.jpg"), dpi=600, bbox_inches='tight')
+                    plt.close()
+                else:
+                    plt.show()
                 
                 # calculate the total number of clusters output by DBSCAN
                 _, total_clusters = cluster_processing(dbscan_labels, 
@@ -358,28 +429,28 @@ def sbm_dbscan_wrapper(in_path: str,
        
         return labels_dict, clusters_dict
 
-    else: 
-        dbscan_labels, dbscan_model = km_dbscan_wrapper(binary_mask, 
-                                                hyperparameter_dict, 
-                                                save_filepath = out_path,
-                                                binary_flag = True,
-                                                save_image = save_image)
+    # else: 
+    #     dbscan_labels, dbscan_model = km_dbscan_wrapper(binary_mask, 
+    #                                             hyperparameter_dict, 
+    #                                             save_filepath = out_path,
+    #                                             binary_flag = True,
+    #                                             save_image = save_image)
         
-        cluster_labels_counts, total_clusters = cluster_processing(dbscan_labels, 
-                                                   plot = cluster_plot)    
+    #     cluster_labels_counts, total_clusters = cluster_processing(dbscan_labels, 
+    #                                                plot = cluster_plot)    
         
-        # get file name from in_path
-        filename = os.path.basename(in_path)
+    #     # get file name from in_path
+    #     filename = os.path.basename(in_path)
     
-        labels_dict[filename] = dbscan_labels
-        clusters_dict[filename] = total_clusters
+    #     labels_dict[filename] = dbscan_labels
+    #     clusters_dict[filename] = total_clusters
 
-        if cluster_plot:
-            til_size(binary_mask)
-        if nn_plot:
-            nearest_neighbor_distance(binary_mask)       
+    #     if cluster_plot:
+    #         til_size(binary_mask)
+    #     if nn_plot:
+    #         nearest_neighbor_distance(binary_mask)       
         
-        return labels_dict, clusters_dict
+    #     return labels_dict, clusters_dict
     
 def extract_cluster_label_counts(tiff_path):
     # Load the TIFF image

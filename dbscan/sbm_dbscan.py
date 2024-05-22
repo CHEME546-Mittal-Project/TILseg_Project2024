@@ -321,7 +321,9 @@ def cluster_processing(dbscan_labels: np.ndarray,
         return cluster_labels_counts, total_clusters, noise_percentage
 
 
-def dbscan_calculations(spatial_weight: float, features: np.ndarray, rgb_calc: str):
+def dbscan_calculations(spatial_weight: float, 
+                        features: np.ndarray, 
+                        rgb_calc: str):
 
     # assuming your feature matrix is the following:
     # [X, Y, R, G, B] where (X,Y) are the centroid coordinates
@@ -338,12 +340,12 @@ def dbscan_calculations(spatial_weight: float, features: np.ndarray, rgb_calc: s
         # calculate pairwise distances or similarities for RGB values
         rgb_distances = euclidean_distances(features[:, 2:])  # Assuming remaining columns are RGB values
         # linear combination of spatial and RGB info
-        combined_distances += spatial_weight * spatial_distances + rgb_weight * rgb_distances
+        combined_distances = spatial_weight * spatial_distances + rgb_weight * rgb_distances
 
     elif rgb_calc == 'cosine':
         # Alternatively, you can use cosine_similarity for similarity instead of distances:
         rgb_similarities = cosine_similarity(features[:, 2:])
-        combined_distances += spatial_weight * spatial_distances + rgb_weight * rgb_similarities
+        combined_distances = spatial_weight * spatial_distances + rgb_weight * rgb_similarities
 
     else:
         raise ValueError("calc parameter must be either 'euclidean' or 'cosine'")
@@ -392,9 +394,7 @@ def visualize_clusters(dbscan: object,
                 linewidth=1,
             )
 
-    ax.set_title(f"'eps': {dbscan_hyperparam['eps']}, 
-                 'min_samples': {dbscan_hyperparam['min_samples']}, 
-                 number of clusters: {total_clusters}")
+    ax.set_title(f"'eps': {dbscan_hyperparam['eps']}, 'min_samples': {dbscan_hyperparam['min_samples']}, number of clusters: {total_clusters}")
     ax.axis('off')
 
     # saving image
@@ -447,15 +447,16 @@ def sbm_dbscan_wrapper(in_path: str,
     and the corresponding value if the total number of clusters for that image.
     """
     
-    # initialize dictionaries
-    labels_dict = {}
-    clusters_dict = {}
-    noise_dict = {}
+    # initialize dictionary
+    results_dict = {}
 
     if multiple_patches_flag:
         for filename in os.listdir(in_path):
             if filename.endswith(".tif"): # looping over each patch
                 
+                # image data
+                patch_cluster_info = {}
+
                 # generate feature matrix from TIL mask 
                 image_path = os.path.join(in_path, filename)
                 features, binary_mask, contours = image_to_features(image_path, binary_flag)
@@ -480,9 +481,11 @@ def sbm_dbscan_wrapper(in_path: str,
                 
                 # assigning each filename the clustering labels 
                 # and total number of clusters
-                labels_dict[filename] = dbscan_labels
-                clusters_dict[filename] = total_clusters
-                noise_dict[filename] = noise
+                patch_cluster_info['labels'] = dbscan_labels
+                patch_cluster_info['total_clusters'] = total_clusters
+                patch_cluster_info['noise'] = noise
+
+                results_dict[filename] = patch_cluster_info
 
                 if cluster_plot:
                     visualize_clusters(dbscan,
@@ -494,32 +497,50 @@ def sbm_dbscan_wrapper(in_path: str,
                                        save_image,
                                        out_path,
                                        filename)
-       
-        return labels_dict, clusters_dict, noise_dict
 
-    # else: 
-    #     dbscan_labels, dbscan_model = km_dbscan_wrapper(binary_mask, 
-    #                                             hyperparameter_dict, 
-    #                                             save_filepath = out_path,
-    #                                             binary_flag = True,
-    #                                             save_image = save_image)
-        
-    #     cluster_labels_counts, total_clusters = cluster_processing(dbscan_labels, 
-    #                                                plot = cluster_plot)    
-        
-    #     # get file name from in_path
-    #     filename = os.path.basename(in_path)
-    
-    #     labels_dict[filename] = dbscan_labels
-    #     clusters_dict[filename] = total_clusters
+    else: 
+        # generate feature matrix from TIL mask 
+        filename = os.path.splitext(os.path.basename(in_path))[0]
+        features, binary_mask, contours = image_to_features(in_path, binary_flag)
 
-    #     if cluster_plot:
-    #         til_size(binary_mask)
-    #     if nn_plot:
-    #         nearest_neighbor_distance(binary_mask)       
+        # DBSCAN Model Fitting
+        if rgb_calc:
+            dbscan_features = dbscan_calculations(spatial_wt, 
+                                                    features, 
+                                                    rgb_calc)
+            dbscan = DBSCAN(**hyperparameter_dict,
+                            metric='precomputed').fit(dbscan_features)
+            dbscan_labels = dbscan.labels_
         
-    #     return labels_dict, clusters_dict
+        else: 
+            dbscan_features = features
+            dbscan = DBSCAN(**hyperparameter_dict).fit(dbscan_features)
+            dbscan_labels = dbscan.labels_
+
+        # calculate the total number of clusters output by DBSCAN
+        _, total_clusters, noise = cluster_processing(dbscan_labels, 
+                                                plot=False)
+        
+        # assigning each filename the clustering labels 
+        # and total number of clusters
+        results_dict['labels'] = dbscan_labels
+        results_dict['total_clusters'] = total_clusters
+        results_dict['noise'] = noise
+
+        if cluster_plot:
+            visualize_clusters(dbscan,
+                                dbscan_labels, 
+                                binary_mask, 
+                                contours, 
+                                hyperparameter_dict, 
+                                total_clusters,
+                                save_image,
+                                out_path,
+                                filename)
+            
+    return results_dict
     
+
 def extract_cluster_label_counts(tiff_path):
     # Load the TIFF image
     cluster_labels_image = tifffile.imread(tiff_path)

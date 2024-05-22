@@ -8,7 +8,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial import distance
 from skimage.measure import regionprops, label
-import sklearn.cluster
+from sklearn.metrics.pairwise import euclidean_distances, cosine_similarity
+from sklearn.cluster import DBSCAN
 import tifffile
 
 # Local Imports
@@ -304,7 +305,104 @@ def cluster_processing(dbscan_labels: np.ndarray,
     else:
         total_clusters = len(labels)
 
-        return cluster_labels_counts, total_clusters
+        # counting the total number of TILs counted
+        total_count = 0
+        for count in cluster_labels_counts.values():
+            total_count += count
+
+        # counting the number of TILs classified as noise
+        noise_percentage = (1 - total_count / 1335) * 100
+
+        print(cluster_labels_counts)
+        print(f"Total TILs Clustered: {total_count}")
+        print(f"Total # Clusters: {total_clusters}")
+        print(f"Noise Points: {noise_percentage:.2f}%")
+
+        return cluster_labels_counts, total_clusters, noise_percentage
+
+
+def dbscan_calculations(spatial_weight: float, features: np.ndarray, rgb_calc: str):
+
+    # assuming your feature matrix is the following:
+    # [X, Y, R, G, B] where (X,Y) are the centroid coordinates
+    # and R, G, B are the averaged values for each contour
+
+    # define weights for spatial distance and RGB 
+    rgb_weight = 1 - spatial_weight
+
+    # calculate pairwise distances for spatial coordinates
+    spatial_distances = euclidean_distances(features[:, :2])  
+        # Assuming first two columns are spatial coordinates
+
+    if rgb_calc == 'euclidean':
+        # calculate pairwise distances or similarities for RGB values
+        rgb_distances = euclidean_distances(features[:, 2:])  # Assuming remaining columns are RGB values
+        # linear combination of spatial and RGB info
+        combined_distances += spatial_weight * spatial_distances + rgb_weight * rgb_distances
+
+    elif rgb_calc == 'cosine':
+        # Alternatively, you can use cosine_similarity for similarity instead of distances:
+        rgb_similarities = cosine_similarity(features[:, 2:])
+        combined_distances += spatial_weight * spatial_distances + rgb_weight * rgb_similarities
+
+    else:
+        raise ValueError("calc parameter must be either 'euclidean' or 'cosine'")
+
+    return combined_distances
+
+
+def visualize_clusters(dbscan: object,
+                       dbscan_labels: np.ndarray, 
+                       mask: np.ndarray, 
+                       contours: list, 
+                       dbscan_hyperparam: dict, 
+                       total_clusters: int,
+                       save_image: bool = False,
+                       out_path: str = None,
+                       filename: str = None):
+
+    # Assuming labeled_mask is your mask
+    unique_labels = set(dbscan_labels)
+    core_samples_mask = np.zeros_like(dbscan_labels, dtype=bool)
+    core_samples_mask[dbscan.core_sample_indices_] = True
+
+    colors = [plt.cm.Spectral(each) for each in np.linspace(0, 1, len(unique_labels))] # create color map
+
+    # ensure the shape of the plot = aspect ratio of original image/mask
+    aspect_ratio = mask.shape[1] / mask.shape[0] 
+    fig_width = 20
+    fig_height = fig_width / aspect_ratio
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=600)  # Set figure size and dpi for high resolution
+
+    for k, color in zip(unique_labels, colors): # loop through each dbscan label
+        if k == -1: # color noise points as black
+            color = [0, 0, 0, 1]
+
+        class_member_mask = dbscan_labels == k # create boolean mask for labels
+        label_indices = np.where(class_member_mask)[0]  # find indices where mask is True 
+
+        for i in label_indices: # draw contours
+            contour = contours[i]
+            xy = np.squeeze(contour)  # convert contour to (N, 2) array
+            ax.plot(
+                xy[:, 0],
+                -xy[:, 1],  # invert y-coordinates (unsure why I have to do this)
+                "-",
+                color=color,
+                linewidth=1,
+            )
+
+    ax.set_title(f"'eps': {dbscan_hyperparam['eps']}, 
+                 'min_samples': {dbscan_hyperparam['min_samples']}, 
+                 number of clusters: {total_clusters}")
+    ax.axis('off')
+
+    # saving image
+    if save_image:
+        plt.savefig(os.path.join(out_path, f"{filename}_DBSCAN.jpg"), dpi=600, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
 
 
 def sbm_dbscan_wrapper(in_path: str, 
@@ -312,9 +410,10 @@ def sbm_dbscan_wrapper(in_path: str,
                hyperparameter_dict: dict = {'eps': 150,'min_samples': 100}, 
                multiple_patches_flag: bool = False,
                binary_flag: bool = True,
-               save_image: bool = False, 
+               spatial_wt: float = None,
+               rgb_calc: str = None, 
                cluster_plot: bool = False,
-               nn_plot: bool = False):
+               save_image: bool = False):
     """
     Takes in the TIL mask, creates the necessary feature matrix, 
     and trains a DSBCAN model based on those features and the given 
@@ -351,47 +450,52 @@ def sbm_dbscan_wrapper(in_path: str,
     # initialize dictionaries
     labels_dict = {}
     clusters_dict = {}
+    noise_dict = {}
 
     if multiple_patches_flag:
         for filename in os.listdir(in_path):
             if filename.endswith(".tif"): # looping over each patch
                 
-                # generate feature matrix
+                # generate feature matrix from TIL mask 
                 image_path = os.path.join(in_path, filename)
-                centroid_coords, binary_mask = image_to_features(image_path, binary_flag)
+                features, binary_mask, contours = image_to_features(image_path, binary_flag)
 
                 # DBSCAN Model Fitting
-                dbscan = sklearn.cluster.DBSCAN(**hyperparameter_dict)
-                dbscan_labels = dbscan.fit_predict(centroid_coords)
+                if rgb_calc:
+                    dbscan_features = dbscan_calculations(spatial_wt, 
+                                                           features, 
+                                                           rgb_calc)
+                    dbscan = DBSCAN(**hyperparameter_dict,
+                                    metric='precomputed').fit(dbscan_features)
+                    dbscan_labels = dbscan.labels_
+                
+                else: 
+                    dbscan_features = features
+                    dbscan = DBSCAN(**hyperparameter_dict).fit(dbscan_features)
+                    dbscan_labels = dbscan.labels_
 
-                # assigning DBSCAN labels to TILs based on centroids
-                colors = np.zeros_like(binary_mask)
-                for i, label in enumerate(dbscan_labels):
-                    centroid_x, centroid_y = centroid_coords[i]
-                    colors[centroid_y, centroid_x] = label
-                
-                # saving image
-                if save_image:
-                    plt.savefig(os.path.join(out_path, f"{filename}_DBSCAN.jpg"), dpi=600, bbox_inches='tight')
-                    plt.close()
-                else:
-                    plt.show()
-                
                 # calculate the total number of clusters output by DBSCAN
-                _, total_clusters = cluster_processing(dbscan_labels, 
-                                                           plot=cluster_plot)
+                _, total_clusters, noise = cluster_processing(dbscan_labels, 
+                                                       plot=False)
                 
                 # assigning each filename the clustering labels 
                 # and total number of clusters
                 labels_dict[filename] = dbscan_labels
                 clusters_dict[filename] = total_clusters
+                noise_dict[filename] = noise
 
                 if cluster_plot:
-                    til_size(mask)
-                if nn_plot:
-                    nearest_neighbor_distance(mask)
+                    visualize_clusters(dbscan,
+                                       dbscan_labels, 
+                                       binary_mask, 
+                                       contours, 
+                                       hyperparameter_dict, 
+                                       total_clusters,
+                                       save_image,
+                                       out_path,
+                                       filename)
        
-        return labels_dict, clusters_dict
+        return labels_dict, clusters_dict, noise_dict
 
     # else: 
     #     dbscan_labels, dbscan_model = km_dbscan_wrapper(binary_mask, 

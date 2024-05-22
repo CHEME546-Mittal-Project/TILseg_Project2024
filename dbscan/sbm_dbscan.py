@@ -103,36 +103,65 @@ def image_to_features(image_path: str,
     include columns corresponding to the RGB values of the pixel.
     """
     
+    # reading image and turning it into a binary array
+    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    _, binary_mask = cv2.threshold(image.astype(np.uint8), 0.01, 1, cv2.THRESH_BINARY)
+
+    # Find contours
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # contours = 1D array where each element contains the [x,y] coords of pts along contour
+
+    # List to store centroid coordinates
+    centroids = []
+    average_rgbs = []
+
+    # Iterate through contours
+    for contour in contours:
+        # Calculate moments of the contour
+        M = cv2.moments(contour)
+        
+        # Calculate centroid coordinates
+        if M['m00'] != 0:
+            centroid_x = int(M['m10'] / M['m00'])
+            centroid_y = int(M['m01'] / M['m00'])
+            centroids.append((centroid_x, centroid_y))
+
+        if binary_flag is False:
+            # reading colored TIL mask
+            image_bgr = cv2.imread(image_path)
+            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+
+            # otain the bounding box of the contour
+            x, y, w, h = cv2.boundingRect(contour)
+                # x,y: top left corner of bounding box
+                # w,h: width, height of bounding box
+        
+            # extract the region of interest (ROI) using the bounding box
+            roi = image_rgb[y:y+h+h, x:x+w+w]
+
+            # # create contour mask based on bounding box and draw contour
+            # mask = np.zeros((h, w), dtype=np.uint8)
+            # cv2.drawContours(mask, [contour - [x, y]], -1, 255, thickness=cv2.FILLED)
+            #     # draws contour relative to bounding box coordinates
+
+            # get averaged RGB values
+            mean_val = cv2.mean(roi)
+                # extracts mean values using pixels from the ROI 
+                # according to to non-zero (white) pixels in the contour mask
+            average_rgb = mean_val[:3] # ignores alpha
+            average_rgbs.append(average_rgb)
+
+    # convert centroids list to NumPy array
+    centroids_array = np.array(centroids)
+
+    # creating the feature matrix
     if binary_flag:
-        # reading image and turning it into a binary array
-        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-        _, binary_mask = cv2.threshold(image.astype(np.uint8), 0.01, 1, cv2.THRESH_BINARY)
-
-        # Find contours
-        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            # contours = 1D array where each element contains the [x,y] coords of pts along contour
-
-        # List to store centroid coordinates
-        centroids = []
-
-        # Iterate through contours
-        for contour in contours:
-            # Calculate moments of the contour
-            M = cv2.moments(contour)
-            
-            # Calculate centroid coordinates
-            if M['m00'] != 0:
-                centroid_x = int(M['m10'] / M['m00'])
-                centroid_y = int(M['m01'] / M['m00'])
-                centroids.append((centroid_x, centroid_y))
-
-        # Convert centroids list to NumPy array
-        centroid_coords = np.array(centroids)
+        features = centroids_array
+    else:
+        average_rgbs_array = np.array(average_rgbs)
+        features = np.concatenate((centroids_array, average_rgbs_array), axis=1)
         
-    # else:
-        
-
-    return centroid_coords, binary_mask, contours
+    return features, binary_mask, contours
 
 
 def nearest_neighbor_distance(binary_mask, 

@@ -396,19 +396,19 @@ def visualize_clusters(dbscan: object,
 
     ax.set_title(f"'eps': {dbscan_hyperparam['eps']}, 'min_samples': {dbscan_hyperparam['min_samples']}, number of clusters: {total_clusters}")
     ax.axis('off')
+    plt.show()
 
     # saving image
     if save_image:
         plt.savefig(os.path.join(out_path, f"{filename}_DBSCAN.jpg"), dpi=600, bbox_inches='tight')
         plt.close()
-    else:
-        plt.show()
 
 
 def sbm_dbscan_wrapper(in_path: str, 
                out_path: str = None, 
                hyperparameter_dict: dict = {'eps': 150,'min_samples': 100}, 
                multiple_patches_flag: bool = False,
+               features_extracted: list = None,
                binary_flag: bool = True,
                spatial_wt: float = None,
                rgb_calc: str = None, 
@@ -499,9 +499,16 @@ def sbm_dbscan_wrapper(in_path: str,
                                        filename)
 
     else: 
-        # generate feature matrix from TIL mask 
-        filename = os.path.splitext(os.path.basename(in_path))[0]
-        features, binary_mask, contours = image_to_features(in_path, binary_flag)
+
+        if features_extracted: # if feature extraction has already been done
+            # features extracted = [features, binary_mask, contours]
+            features = features_extracted[0]
+            binary_mask = features_extracted[1]
+            contours = features_extracted[2]
+
+        else:
+            # generate feature matrix from TIL mask 
+            features, binary_mask, contours = image_to_features(in_path, binary_flag)
 
         # DBSCAN Model Fitting
         if rgb_calc:
@@ -528,6 +535,7 @@ def sbm_dbscan_wrapper(in_path: str,
         results_dict['noise'] = noise
 
         if cluster_plot:
+            filename = os.path.splitext(os.path.basename(in_path))[0]
             visualize_clusters(dbscan,
                                 dbscan_labels, 
                                 binary_mask, 

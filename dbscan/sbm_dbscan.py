@@ -16,31 +16,24 @@ import tifffile
 from tilseg.refine_kmeans import km_dbscan_wrapper
 
 
-def image_to_features(image_path: str,
-                     binary_flag: bool = True):
+def image_to_features(mask_path: str,
+                      original_image_path: str,
+                      binary_flag: bool = True):
     """
     Generates the spatial coordinates from a binary mask as features 
     to cluster with DBSCAN
     
     Parameters
     -----
-    mask (np.ndarray): a mask with 1's corresponding to the pixels 
-    involved in the TIL cluster (i.e. with the most contours) and 0's for pixels not
-    binary flag (bool): True if the mask is binary which should be a 2D numpy array 
-    consisting of only 1's (i.e. pixels) and 0's (i.e. background). False if the 
-    mask is colored in which it should be a 3D numpy array containing the RGB 
-    values of an image.
+
 
     Returns
     -----
-    features (np.array) is a an array where each row corresponds to a set of 
-    coordinates (x,y) of the pixels where the mask had a value of 1. If the 
-    binary_flag was set to False, then the feature matrix should additionally 
-    include columns corresponding to the RGB values of the pixel.
+
     """
     
     # reading image and turning it into a binary array
-    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    image = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
     _, binary_mask = cv2.threshold(image.astype(np.uint8), 0.01, 1, cv2.THRESH_BINARY)
 
     # Find contours
@@ -64,7 +57,7 @@ def image_to_features(image_path: str,
 
         if binary_flag is False:
             # reading colored TIL mask
-            image_bgr = cv2.imread(image_path)
+            image_bgr = cv2.imread(original_image_path)
             image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
             # otain the bounding box of the contour
@@ -74,6 +67,7 @@ def image_to_features(image_path: str,
         
             # extract the region of interest (ROI) using the bounding box
             roi = image_rgb[y:y+h+h, x:x+w+w]
+            # TODO: make sure you are calculating rgb values from the original image
 
             # # create contour mask based on bounding box and draw contour
             # mask = np.zeros((h, w), dtype=np.uint8)
@@ -404,16 +398,12 @@ def visualize_clusters(dbscan: object,
         plt.close()
 
 
-def sbm_dbscan_wrapper(in_path: str, 
-               out_path: str = None, 
-               hyperparameter_dict: dict = {'eps': 150,'min_samples': 100}, 
-               multiple_patches_flag: bool = False,
-               features_extracted: list = None,
-               binary_flag: bool = True,
-               spatial_wt: float = None,
-               rgb_calc: str = None, 
-               cluster_plot: bool = False,
-               save_image: bool = False):
+def sbm_dbscan_wrapper(mask_path: str, original_img_path: str, out_path: str = None, 
+                       hyperparameter_dict: dict = {'eps': 150,'min_samples': 100},
+                       multiple_patches_flag: bool = False,
+                       features_extracted: list = None,
+                       binary_flag: bool = True, spatial_wt: float = None, rgb_calc: str = None, 
+                       cluster_plot: bool = False, save_image: bool = False):
     """
     Takes in the TIL mask, creates the necessary feature matrix, 
     and trains a DSBCAN model based on those features and the given 
@@ -421,45 +411,72 @@ def sbm_dbscan_wrapper(in_path: str,
     
     Parameters
     -----
-    in_path (str): If the multiple_patches_flag is true, this should
-    be the folder path containing all of the images. If it is false, this
-    should be the file path to the image itself.
+    mask_path (str): If multiple_patches_flag=True, this should
+    be the folder path containing all of the TIL masks. If it is false, it
+    should be the file path to the file itself.
+
+    original_img_path (str): If multiple_patches_flag=True, this should
+    be the folder path containing all of the images of the original patches. 
+    If it is false, it should be the file path to the file itself. 
+    (note: the name of the original image should match the filename of 
+    the corresponding TIL mask)
+
     out_path (str): Path to a folder where all the images/results will
     be saved
+
     hyperparameter_dict (dict): Dictionary with DBSCAN hyperparameters ('eps'
     and 'min_samples') as the keys and their corresponding values.
+    
     multiple_patches_flag (bool): Indicates whether you need to convert
     a folder of patches or a singular patch to binary masks.
-    save_image (bool): True to save a high resolution image (600 dpi)
+
+    binary_flag (bool): Inidcates whether the TIL mask to be clustered
+    is binary or in RGB.
+    
+    features_extracted (list): If the feature extraction has already been done 
+    separately, the user must input a list: [features, binary_mask, contours]
+    corresponding to the outputs from the image_to_features function above.
+    (note: this step usually takes the longest but only needs to be done once)
+    
+    spatial_wt (float): A number between 0 and 1 indicating the weight of
+    the spatial coordinates vs. the RGB values in the feature matrix
+    (only relevant if binary_flag=False)
+    
+    rgb_calc (str): If the binary_flag=False, this specifies what
+    matric to use to calculate the differences in the averaged RGB values.
+    
+    cluster_plot (bool): True if you want to plot and visualize the DBSCAN
+    clustering results.
     of the DBSCAN clustering results.
-        # TODO still need to fix this in km_dbscan_wrapper
-    cluster_plot (bool): True to calculate the nearest neighbor distances 
-    between all TILs.
-        # TODO: need to equate this to something? maybe add to one of the output dicts
-    nn_plot (bool): True to calculate the pixel are of each TIL.
-        # TODO: need to equate this to something? maybe add to one of the output dicts
+    
+    save_image (bool): True if you want to save the clustering results
+    as a .jpg file (600 dpi)
 
     Returns
     -----
     labels_dict (dict): Dictionary where each key is the image file name
     and the corresponding values are the DBSCAN labels for that image. 
+    
     clusters_dict (dict): Dictionary where each key is the image file name
     and the corresponding value if the total number of clusters for that image.
     """
     
     # initialize dictionary
-    results_dict = {}
+    results_dict = {} # contains the labels, total clusters, and noise from the clustering for each patch
+    features_dict = {} # contains the features, binary_mask, contours for each patch
 
     if multiple_patches_flag:
-        for filename in os.listdir(in_path):
+        for filename in os.listdir(mask_path):
             if filename.endswith(".tif"): # looping over each patch
                 
                 # image data
                 patch_cluster_info = {}
 
                 # generate feature matrix from TIL mask 
-                image_path = os.path.join(in_path, filename)
-                features, binary_mask, contours = image_to_features(image_path, binary_flag)
+                mask = os.path.join(mask_path, filename)
+                original_img = os.path.join(original_img_path, filename) 
+                    # make sure the filenames for the mask and original patch match in each folder
+                features, binary_mask, contours = image_to_features(mask, original_img, binary_flag)
 
                 # DBSCAN Model Fitting
                 if rgb_calc:
@@ -500,6 +517,8 @@ def sbm_dbscan_wrapper(in_path: str,
 
     else: 
 
+        filename = os.path.splitext(os.path.basename(mask_path))[0]
+
         if features_extracted: # if feature extraction has already been done
             # features extracted = [features, binary_mask, contours]
             features = features_extracted[0]
@@ -508,7 +527,8 @@ def sbm_dbscan_wrapper(in_path: str,
 
         else:
             # generate feature matrix from TIL mask 
-            features, binary_mask, contours = image_to_features(in_path, binary_flag)
+            features, binary_mask, contours = image_to_features(mask_path, original_img_path, binary_flag)
+            features_dict[filename] = [features, binary_mask, contours]
 
         # DBSCAN Model Fitting
         if rgb_calc:
@@ -535,7 +555,6 @@ def sbm_dbscan_wrapper(in_path: str,
         results_dict['noise'] = noise
 
         if cluster_plot:
-            filename = os.path.splitext(os.path.basename(in_path))[0]
             visualize_clusters(dbscan,
                                 dbscan_labels, 
                                 binary_mask, 
@@ -546,7 +565,7 @@ def sbm_dbscan_wrapper(in_path: str,
                                 out_path,
                                 filename)
             
-    return results_dict
+    return results_dict, features_dict
     
 
 def extract_cluster_label_counts(tiff_path):
